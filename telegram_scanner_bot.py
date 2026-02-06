@@ -8,7 +8,7 @@ from datetime import datetime
 from telethon import TelegramClient, errors
 from telethon.tl.functions.channels import InviteToChannelRequest
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 import sys
 
 # Cấu hình logging
@@ -25,7 +25,6 @@ print("=" * 80)
 # === CẤU HÌNH ===
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
 SESSION_NAME = 'scanner_session'
-ADMIN_USER_ID = os.environ.get('ADMIN_USER_ID', '')
 
 # === CẤU HÌNH SCANNER ===
 INPUT_TXT = "usernames.txt"
@@ -46,12 +45,6 @@ class TelegramScanner:
             'target_group': '',
             'phone': '',
             'is_configured': False
-        }
-        self.stats = {
-            'scanned': 0,
-            'found': 0,
-            'added': 0,
-            'failed': 0
         }
         self.load_config()
     
@@ -517,10 +510,13 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
    /add [số_lượng]
 """)
 
+async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Lệnh không hợp lệ! Dùng /help để xem các lệnh.")
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Lỗi: {context.error}")
     if update and update.message:
-        await update.message.reply_text(f"⚠️ Lỗi: {context.error}")
+        await update.message.reply_text(f"⚠️ Đã xảy ra lỗi: {str(context.error)[:100]}")
 
 def main():
     """Hàm chính"""
@@ -553,6 +549,9 @@ def main():
     application.add_handler(CommandHandler("stop", stop_cmd))
     application.add_handler(CommandHandler("help", help_cmd))
     
+    # Handler cho lệnh không xác định
+    application.add_handler(MessageHandler(filters.COMMAND, unknown))
+    
     # Xử lý lỗi
     application.add_error_handler(error_handler)
     
@@ -561,6 +560,8 @@ def main():
     print("=" * 80)
     
     # Chạy bot
+    print("✅ Bot đã khởi động!")
+    print("📲 Tìm bot trên Telegram và dùng /start để bắt đầu")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
