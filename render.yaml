@@ -7,8 +7,5 @@ services:
     envVars:
       - key: BOT_TOKEN
         sync: false
-      - key: ADMIN_USER_ID
-        sync: false
-        value: ""  # Có thể để trống
     plan: free
     autoDeploy: true
