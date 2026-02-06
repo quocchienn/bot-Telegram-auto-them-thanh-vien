@@ -7,8 +7,10 @@ import logging
 from datetime import datetime
 from telethon import TelegramClient, errors
 from telethon.tl.functions.channels import InviteToChannelRequest
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.types import Message
+from aiogram.enums import ParseMode
 import sys
 
 # Cấu hình logging
@@ -210,9 +212,12 @@ class TelegramScanner:
                 success_rate = len(found_users) / scanned * 100
             
             report = f"""
-📊 **BÁO CÁO QUÉT**
+📊 <b>BÁO CÁO QUÉT</b>
+⏱️ Thời gian: Đã xong
+📁 Từ file: {INPUT_TXT}
 🔍 Đã quét: {scanned} username
 ✅ Tìm thấy: {len(found_users)} user
+⚡ Tốc độ: {scanned/max(1, len(usernames))*100:.1f}%
 🎯 Tỷ lệ: {success_rate:.2f}%
 💾 Đã lưu: {OUTPUT_JSON}
 """
@@ -277,9 +282,10 @@ class TelegramScanner:
                 success_rate = added / len(users_to_add) * 100
             
             report = f"""
-📤 **BÁO CÁO THÊM USER**
+📤 <b>BÁO CÁO THÊM USER</b>
 ✅ Đã thêm: {added}
 ❌ Thất bại: {failed}
+⏱️ Thời gian: Đã xong
 📈 Tỷ lệ: {success_rate:.1f}%
 """
             return True, report
@@ -321,108 +327,133 @@ class TelegramScanner:
 # Khởi tạo scanner
 scanner = TelegramScanner()
 
+# Khởi tạo aiogram bot
+bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+dp = Dispatcher()
+
 # ===== BOT HANDLERS =====
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("""
-🤖 **Telegram Scanner Bot**
+@dp.message(Command("start"))
+async def cmd_start(message: Message):
+    welcome_text = """
+🤖 <b>Telegram Scanner Bot</b>
 
-⚙️ **CẤU HÌNH:**
-/setapi <api_id> <api_hash>
-/setphone <số_điện_thoại>
-/setgroup @username_group
+<b>⚙️ CẤU HÌNH:</b>
+/setapi <code>&lt;api_id&gt; &lt;api_hash&gt;</code>
+/setphone <code>&lt;số_điện_thoại&gt;</code>
+/setgroup <code>@username_group</code>
 /config
 
-🔐 **ĐĂNG NHẬP:**
+<b>🔐 ĐĂNG NHẬP:</b>
 /connect
 /login
-/verify <mã>
-/2fa <mật_khẩu>
+/verify <code>&lt;mã&gt;</code>
+/2fa <code>&lt;mật_khẩu&gt;</code>
 
-🔍 **QUÉT:**
-/scan [số_lượng]
+<b>🔍 QUÉT:</b>
+/scan <code>[số_lượng]</code>
 /stats
 /list
 
-📤 **THÊM USER:**
-/add [số_lượng]
+<b>📤 THÊM USER:</b>
+/add <code>[số_lượng]</code>
 
-🛠️ **KHÁC:**
+<b>🛠️ KHÁC:</b>
 /stop
 /help
-""")
+"""
+    await message.answer(welcome_text)
 
-async def setapi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) != 2:
-        await update.message.reply_text("❌ Dùng: /setapi <api_id> <api_hash>")
+@dp.message(Command("setapi"))
+async def cmd_setapi(message: Message):
+    args = message.text.split()[1:]
+    if len(args) != 2:
+        await message.answer("❌ <b>Sai cú pháp!</b>\nDùng: <code>/setapi &lt;api_id&gt; &lt;api_hash&gt;</code>")
         return
     
-    scanner.config['api_id'] = context.args[0]
-    scanner.config['api_hash'] = context.args[1]
+    scanner.config['api_id'] = args[0]
+    scanner.config['api_hash'] = args[1]
     scanner.save_config()
-    await update.message.reply_text(f"✅ Đã cấu hình API")
+    await message.answer(f"✅ <b>Đã cấu hình API!</b>\nAPI_ID: <code>{args[0]}</code>\nAPI_HASH: <code>{args[1][:10]}...</code>")
 
-async def setphone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Dùng: /setphone <số_điện_thoại>")
+@dp.message(Command("setphone"))
+async def cmd_setphone(message: Message):
+    args = message.text.split()[1:]
+    if not args:
+        await message.answer("❌ <b>Sai cú pháp!</b>\nDùng: <code>/setphone &lt;số_điện_thoại&gt;</code>")
         return
     
-    scanner.config['phone'] = context.args[0]
+    scanner.config['phone'] = args[0]
     scanner.save_config()
-    await update.message.reply_text(f"✅ Đã cấu hình số điện thoại")
+    await message.answer(f"✅ <b>Đã cấu hình số điện thoại:</b> <code>{args[0]}</code>")
 
-async def setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Dùng: /setgroup @username_group")
+@dp.message(Command("setgroup"))
+async def cmd_setgroup(message: Message):
+    args = message.text.split()[1:]
+    if not args:
+        await message.answer("❌ <b>Sai cú pháp!</b>\nDùng: <code>/setgroup @username_group</code>")
         return
     
-    scanner.config['target_group'] = context.args[0]
+    scanner.config['target_group'] = args[0]
     scanner.config['is_configured'] = True
     scanner.save_config()
-    await update.message.reply_text(f"✅ Đã cấu hình nhóm")
+    await message.answer(f"✅ <b>Đã cấu hình nhóm:</b> <code>{args[0]}</code>")
 
-async def config_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@dp.message(Command("config"))
+async def cmd_config(message: Message):
     config_text = f"""
-⚙️ **CẤU HÌNH:**
-API_ID: {scanner.config.get('api_id', '❌ Chưa có')}
-API_HASH: {scanner.config.get('api_hash', '❌ Chưa có')[:10]}...
-Phone: {scanner.config.get('phone', '❌ Chưa có')}
-Nhóm: {scanner.config.get('target_group', '❌ Chưa có')}
+⚙️ <b>CẤU HÌNH:</b>
+API_ID: <code>{scanner.config.get('api_id', '❌ Chưa có')}</code>
+API_HASH: <code>{scanner.config.get('api_hash', '❌ Chưa có')[:10]}...</code>
+Phone: <code>{scanner.config.get('phone', '❌ Chưa có')}</code>
+Nhóm: <code>{scanner.config.get('target_group', '❌ Chưa có')}</code>
 """
-    await update.message.reply_text(config_text)
+    await message.answer(config_text)
 
-async def connect_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@dp.message(Command("connect"))
+async def cmd_connect(message: Message):
+    await message.answer("🔄 <b>Đang kết nối...</b>")
     success, msg = await scanner.connect_client()
-    await update.message.reply_text(msg)
+    await message.answer(msg)
 
-async def login_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@dp.message(Command("login"))
+async def cmd_login(message: Message):
+    await message.answer("🔄 <b>Đang đăng nhập...</b>")
     success, msg = await scanner.login()
-    await update.message.reply_text(msg)
+    await message.answer(msg)
 
-async def verify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Dùng: /verify <mã>")
+@dp.message(Command("verify"))
+async def cmd_verify(message: Message):
+    args = message.text.split()[1:]
+    if not args:
+        await message.answer("❌ <b>Sai cú pháp!</b>\nDùng: <code>/verify &lt;mã&gt;</code>")
         return
     
-    success, msg = await scanner.verify(context.args[0])
-    await update.message.reply_text(msg)
+    await message.answer("🔄 <b>Đang xác minh...</b>")
+    success, msg = await scanner.verify(args[0])
+    await message.answer(msg)
 
-async def tfa_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Dùng: /2fa <mật_khẩu>")
+@dp.message(Command("2fa"))
+async def cmd_2fa(message: Message):
+    args = message.text.split()[1:]
+    if not args:
+        await message.answer("❌ <b>Sai cú pháp!</b>\nDùng: <code>/2fa &lt;mật_khẩu&gt;</code>")
         return
     
-    success, msg = await scanner.verify_2fa(context.args[0])
-    await update.message.reply_text(msg)
+    await message.answer("🔄 <b>Đang xác minh 2FA...</b>")
+    success, msg = await scanner.verify_2fa(args[0])
+    await message.answer(msg)
 
-async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@dp.message(Command("scan"))
+async def cmd_scan(message: Message):
     if scanner.is_running:
-        await update.message.reply_text("⚠️ Đang chạy tác vụ khác!")
+        await message.answer("⚠️ <b>Đang chạy tác vụ khác!</b>")
         return
     
-    count = int(context.args[0]) if context.args else None
+    args = message.text.split()[1:]
+    count = int(args[0]) if args else None
     
-    msg = await update.message.reply_text("🔍 Đang quét...")
+    msg = await message.answer("🔍 <b>Đang quét...</b>")
     
     async def task():
         success, result = await scanner.scan(count)
@@ -430,14 +461,16 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     asyncio.create_task(task())
 
-async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@dp.message(Command("add"))
+async def cmd_add(message: Message):
     if scanner.is_running:
-        await update.message.reply_text("⚠️ Đang chạy tác vụ khác!")
+        await message.answer("⚠️ <b>Đang chạy tác vụ khác!</b>")
         return
     
-    count = int(context.args[0]) if context.args else 50
+    args = message.text.split()[1:]
+    count = int(args[0]) if args else 50
     
-    msg = await update.message.reply_text("📤 Đang thêm user...")
+    msg = await message.answer("📤 <b>Đang thêm user...</b>")
     
     async def task():
         success, result = await scanner.add_users(count)
@@ -445,80 +478,81 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     asyncio.create_task(task())
 
-async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@dp.message(Command("stats"))
+async def cmd_stats(message: Message):
     found_users = scanner.load_found_users()
     
     stats = f"""
-📊 **THỐNG KÊ:**
-User đã tìm: {len(found_users)}
-File: {OUTPUT_JSON}
+📊 <b>THỐNG KÊ:</b>
+User đã tìm: <code>{len(found_users)}</code>
+File: <code>{OUTPUT_JSON}</code>
 """
     
     if found_users:
-        stats += "\n📋 **5 user gần nhất:**\n"
+        stats += "\n<b>📋 5 user gần nhất:</b>\n"
         for i, user in enumerate(found_users[-5:], 1):
             name = user.get('first_name', '') or f"@{user.get('username', '')}"
             stats += f"{i}. {name}\n"
     
-    await update.message.reply_text(stats)
+    await message.answer(stats)
 
-async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@dp.message(Command("list"))
+async def cmd_list(message: Message):
     found_users = scanner.load_found_users()
     
     if not found_users:
-        await update.message.reply_text("❌ Chưa có user nào!")
+        await message.answer("❌ <b>Chưa có user nào!</b>")
         return
     
     # Chia thành các tin nhắn nhỏ
     chunk_size = 15
     for i in range(0, len(found_users), chunk_size):
         chunk = found_users[i:i+chunk_size]
-        text = f"📋 User {i+1}-{i+len(chunk)}:\n\n"
+        text = f"📋 <b>User {i+1}-{i+len(chunk)}:</b>\n\n"
         
         for user in chunk:
             text += f"• @{user.get('username', '')}\n"
         
-        await update.message.reply_text(text)
+        await message.answer(text)
         await asyncio.sleep(0.3)
 
-async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@dp.message(Command("stop"))
+async def cmd_stop(message: Message):
     msg = await scanner.stop()
-    await update.message.reply_text(msg)
+    await message.answer(msg)
 
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("""
-ℹ️ **HƯỚNG DẪN:**
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
+    help_text = """
+ℹ️ <b>HƯỚNG DẪN:</b>
 
-1. Cấu hình API từ my.telegram.org:
-   /setapi <api_id> <api_hash>
+1. <b>Cấu hình API</b> từ my.telegram.org:
+   <code>/setapi &lt;api_id&gt; &lt;api_hash&gt;</code>
 
-2. Cấu hình số điện thoại:
-   /setphone <số_điện_thoại>
+2. <b>Cấu hình số điện thoại:</b>
+   <code>/setphone &lt;số_điện_thoại&gt;</code>
 
-3. Cấu hình nhóm:
-   /setgroup @username_group
+3. <b>Cấu hình nhóm:</b>
+   <code>/setgroup @username_group</code>
 
-4. Đăng nhập:
-   /connect → /login → /verify <mã>
+4. <b>Đăng nhập:</b>
+   <code>/connect</code> → <code>/login</code> → <code>/verify &lt;mã&gt;</code>
 
-5. Thêm username vào file usernames.txt
+5. <b>Thêm username vào file usernames.txt</b>
 
-6. Quét:
-   /scan [số_lượng]
+6. <b>Quét:</b>
+   <code>/scan [số_lượng]</code>
 
-7. Thêm user:
-   /add [số_lượng]
-""")
+7. <b>Thêm user:</b>
+   <code>/add [số_lượng]</code>
+"""
+    await message.answer(help_text)
 
-async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Lệnh không hợp lệ! Dùng /help để xem các lệnh.")
+@dp.message()
+async def handle_unknown(message: Message):
+    await message.answer("❌ <b>Lệnh không hợp lệ!</b>\nDùng <code>/help</code> để xem các lệnh.")
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Lỗi: {context.error}")
-    if update and update.message:
-        await update.message.reply_text(f"⚠️ Đã xảy ra lỗi: {str(context.error)[:100]}")
-
-def main():
+async def main():
     """Hàm chính"""
     if not BOT_TOKEN:
         print("❌ BOT_TOKEN chưa được cấu hình!")
@@ -529,32 +563,6 @@ def main():
     if not os.path.exists(INPUT_TXT):
         scanner.create_sample_file()
     
-    # Tạo ứng dụng bot
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Thêm handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("setapi", setapi))
-    application.add_handler(CommandHandler("setphone", setphone))
-    application.add_handler(CommandHandler("setgroup", setgroup))
-    application.add_handler(CommandHandler("config", config_cmd))
-    application.add_handler(CommandHandler("connect", connect_cmd))
-    application.add_handler(CommandHandler("login", login_cmd))
-    application.add_handler(CommandHandler("verify", verify_cmd))
-    application.add_handler(CommandHandler("2fa", tfa_cmd))
-    application.add_handler(CommandHandler("scan", scan_cmd))
-    application.add_handler(CommandHandler("add", add_cmd))
-    application.add_handler(CommandHandler("stats", stats_cmd))
-    application.add_handler(CommandHandler("list", list_cmd))
-    application.add_handler(CommandHandler("stop", stop_cmd))
-    application.add_handler(CommandHandler("help", help_cmd))
-    
-    # Handler cho lệnh không xác định
-    application.add_handler(MessageHandler(filters.COMMAND, unknown))
-    
-    # Xử lý lỗi
-    application.add_error_handler(error_handler)
-    
     print("🤖 Bot đang khởi động...")
     print(f"📁 File username: {INPUT_TXT}")
     print("=" * 80)
@@ -562,7 +570,13 @@ def main():
     # Chạy bot
     print("✅ Bot đã khởi động!")
     print("📲 Tìm bot trên Telegram và dùng /start để bắt đầu")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n\n👋 Bot đã dừng")
+    except Exception as e:
+        print(f"\n❌ Lỗi: {str(e)}")
