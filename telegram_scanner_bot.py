@@ -7,11 +7,11 @@ import logging
 from datetime import datetime
 from telethon import TelegramClient, errors
 from telethon.tl.functions.channels import InviteToChannelRequest
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.enums import ParseMode
-import sys
+from aiogram.client.default import DefaultBotProperties
 
 # Cấu hình logging
 logging.basicConfig(
@@ -217,7 +217,6 @@ class TelegramScanner:
 📁 Từ file: {INPUT_TXT}
 🔍 Đã quét: {scanned} username
 ✅ Tìm thấy: {len(found_users)} user
-⚡ Tốc độ: {scanned/max(1, len(usernames))*100:.1f}%
 🎯 Tỷ lệ: {success_rate:.2f}%
 💾 Đã lưu: {OUTPUT_JSON}
 """
@@ -327,8 +326,8 @@ class TelegramScanner:
 # Khởi tạo scanner
 scanner = TelegramScanner()
 
-# Khởi tạo aiogram bot
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+# Khởi tạo aiogram bot với cấu hình mới
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 # ===== BOT HANDLERS =====
@@ -580,3 +579,5 @@ if __name__ == "__main__":
         print("\n\n👋 Bot đã dừng")
     except Exception as e:
         print(f"\n❌ Lỗi: {str(e)}")
+        import traceback
+        traceback.print_exc()
