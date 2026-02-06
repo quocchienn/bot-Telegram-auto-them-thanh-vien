@@ -211,11 +211,16 @@ class TelegramScanner:
             
             self.is_running = False
             
+            # Tính tỷ lệ
+            success_rate = 0
+            if scanned > 0:
+                success_rate = len(found_users) / scanned * 100
+            
             report = f"""
 📊 **BÁO CÁO QUÉT**
 🔍 Đã quét: {scanned} username
 ✅ Tìm thấy: {len(found_users)} user
-🎯 Tỷ lệ: {len(found_users)/scanned*100:.2f}% nếu scanned>0 else 0}%
+🎯 Tỷ lệ: {success_rate:.2f}%
 💾 Đã lưu: {OUTPUT_JSON}
 """
             return True, report
@@ -273,11 +278,16 @@ class TelegramScanner:
             
             self.is_running = False
             
+            # Tính tỷ lệ
+            success_rate = 0
+            if len(users_to_add) > 0:
+                success_rate = added / len(users_to_add) * 100
+            
             report = f"""
 📤 **BÁO CÁO THÊM USER**
 ✅ Đã thêm: {added}
 ❌ Thất bại: {failed}
-📈 Tỷ lệ: {added/len(users_to_add)*100:.1f}%
+📈 Tỷ lệ: {success_rate:.1f}%
 """
             return True, report
             
