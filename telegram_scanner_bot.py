@@ -4,6 +4,7 @@ import time
 import json
 import os
 import logging
+import sqlite3
 from datetime import datetime
 from telethon import TelegramClient, errors
 from telethon.tl.functions.channels import InviteToChannelRequest
@@ -28,9 +29,8 @@ print("=" * 80)
 
 # === CẤU HÌNH ===
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')  # URL của bạn trên Render
-SESSION_NAME = 'scanner_session'
-PORT = int(os.environ.get('PORT', 10000))  # Render dùng port 10000
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')
+PORT = int(os.environ.get('PORT', 10000))
 
 # === CẤU HÌNH SCANNER ===
 INPUT_TXT = "usernames.txt"
@@ -52,6 +52,7 @@ class TelegramScanner:
             'phone': '',
             'is_configured': False
         }
+        self.session_file = 'scanner_session.session'
         self.load_config()
     
     def load_config(self):
@@ -72,28 +73,76 @@ class TelegramScanner:
         except Exception as e:
             logger.error(f"❌ Lỗi lưu cấu hình: {e}")
     
-    async def connect_client(self):
-        """Kết nối Telethon client"""
+    def fix_sqlite_locking(self):
+        """Sửa lỗi SQLite locking"""
         try:
-            if not self.config['api_id'] or not self.config['api_hash']:
-                return False, "❌ Chưa cấu hình API_ID và API_HASH!"
-            
-            self.client = TelegramClient(
-                SESSION_NAME,
-                int(self.config['api_id']),
-                self.config['api_hash']
-            )
-            
-            await self.client.connect()
-            
-            if not await self.client.is_user_authorized():
-                if not self.config['phone']:
-                    return False, "❌ Chưa cấu hình số điện thoại!"
-                return False, "🔐 Chưa đăng nhập. Dùng /login"
-            
-            return True, "✅ Đã kết nối và đăng nhập!"
+            # Kiểm tra và sửa session file nếu cần
+            if os.path.exists(self.session_file):
+                # Backup file cũ
+                backup_file = f"{self.session_file}.backup"
+                if os.path.exists(backup_file):
+                    os.remove(backup_file)
+                os.rename(self.session_file, backup_file)
+                
+                # Tạo file session mới nếu backup tồn tại
+                if os.path.exists(backup_file):
+                    # Copy backup trở lại
+                    import shutil
+                    shutil.copy2(backup_file, self.session_file)
+                    logger.info("✅ Đã sửa session file")
+                
         except Exception as e:
-            return False, f"❌ Lỗi kết nối: {str(e)}"
+            logger.error(f"❌ Lỗi sửa session file: {e}")
+    
+    async def connect_client(self, max_retries=3):
+        """Kết nối Telethon client với retry"""
+        for attempt in range(max_retries):
+            try:
+                if not self.config['api_id'] or not self.config['api_hash']:
+                    return False, "❌ Chưa cấu hình API_ID và API_HASH!"
+                
+                # Sửa lỗi SQLite locking trước khi kết nối
+                if attempt > 0:
+                    self.fix_sqlite_locking()
+                    await asyncio.sleep(1)  # Chờ một chút
+                
+                self.client = TelegramClient(
+                    self.session_file,
+                    int(self.config['api_id']),
+                    self.config['api_hash']
+                )
+                
+                # Thiết lập connection parameters để tránh lỗi
+                self.client.flood_sleep_threshold = 0
+                
+                await self.client.connect()
+                
+                if not await self.client.is_user_authorized():
+                    if not self.config['phone']:
+                        return False, "❌ Chưa cấu hình số điện thoại!"
+                    return False, "🔐 Chưa đăng nhập. Dùng /login"
+                
+                logger.info(f"✅ Kết nối thành công (attempt {attempt + 1})")
+                return True, "✅ Đã kết nối và đăng nhập!"
+                
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    logger.warning(f"⚠️ Database bị locked, thử lại... ({attempt + 1}/{max_retries})")
+                    self.fix_sqlite_locking()
+                    await asyncio.sleep(2)
+                    continue
+                else:
+                    return False, f"❌ Lỗi database: {str(e)}"
+                    
+            except Exception as e:
+                error_msg = str(e)
+                if attempt < max_retries - 1:
+                    logger.warning(f"⚠️ Lỗi kết nối, thử lại... ({attempt + 1}/{max_retries}): {error_msg[:100]}")
+                    await asyncio.sleep(2)
+                else:
+                    return False, f"❌ Lỗi kết nối: {error_msg[:200]}"
+        
+        return False, "❌ Không thể kết nối sau nhiều lần thử"
     
     async def login(self):
         """Đăng nhập vào Telegram"""
@@ -161,10 +210,12 @@ class TelegramScanner:
         logger.info(f"📝 Đã tạo file {INPUT_TXT} mẫu")
     
     async def scan(self, count=None):
-        """Quét username"""
+        """Quét username với error handling"""
         try:
             if not self.client or not await self.client.is_user_authorized():
-                return False, "❌ Chưa đăng nhập!"
+                success, msg = await self.connect_client()
+                if not success:
+                    return False, msg
             
             usernames = self.load_usernames()
             if not usernames:
@@ -176,6 +227,7 @@ class TelegramScanner:
             self.is_running = True
             found_users = []
             scanned = 0
+            errors = 0
             
             for username in usernames:
                 if not self.is_running:
@@ -192,17 +244,26 @@ class TelegramScanner:
                             'scanned_at': datetime.now().isoformat()
                         }
                         found_users.append(user_info)
+                        logger.debug(f"✅ Tìm thấy: @{username}")
                 
                 except (ValueError, errors.UsernameNotOccupiedError):
                     pass
-                except Exception:
-                    pass
+                except errors.FloodWaitError as e:
+                    logger.warning(f"⚠️ Flood wait: {e.seconds}s")
+                    await asyncio.sleep(e.seconds)
+                    continue
+                except Exception as e:
+                    errors += 1
+                    if errors > 10:  # Nếu quá nhiều lỗi, dừng lại
+                        logger.error(f"Quá nhiều lỗi, dừng quét: {e}")
+                        break
                 
                 scanned += 1
                 
                 # Delay ngẫu nhiên
                 if scanned % BATCH_SIZE == 0:
-                    await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
+                    wait_time = random.uniform(MIN_DELAY, MAX_DELAY)
+                    await asyncio.sleep(wait_time)
             
             # Lưu kết quả
             if found_users:
@@ -224,17 +285,23 @@ class TelegramScanner:
 🎯 Tỷ lệ: {success_rate:.2f}%
 💾 Đã lưu: {OUTPUT_JSON}
 """
+            if errors > 0:
+                report += f"⚠️ Lỗi: {errors}\n"
+            
             return True, report
             
         except Exception as e:
             self.is_running = False
-            return False, f"❌ Lỗi khi quét: {str(e)}"
+            logger.error(f"Lỗi khi quét: {e}")
+            return False, f"❌ Lỗi khi quét: {str(e)[:200]}"
     
     async def add_users(self, count=50):
         """Thêm user vào nhóm"""
         try:
             if not self.client or not await self.client.is_user_authorized():
-                return False, "❌ Chưa đăng nhập!"
+                success, msg = await self.connect_client()
+                if not success:
+                    return False, msg
             
             if not self.config['target_group']:
                 return False, "❌ Chưa cấu hình nhóm!"
@@ -251,7 +318,7 @@ class TelegramScanner:
             added = 0
             failed = 0
             
-            for user_info in users_to_add:
+            for i, user_info in enumerate(users_to_add, 1):
                 if not self.is_running:
                     break
                 
@@ -260,6 +327,7 @@ class TelegramScanner:
                     
                     if getattr(user, 'bot', False):
                         failed += 1
+                        logger.debug(f"🤖 Bỏ qua bot: @{user_info['username']}")
                         continue
                     
                     await self.client(InviteToChannelRequest(group, [user]))
@@ -268,14 +336,22 @@ class TelegramScanner:
                     # Ghi vào file
                     with open(ADDED_TXT, 'a', encoding='utf-8') as f:
                         f.write(f"{datetime.now().isoformat()}|@{user_info['username']}|{user.id}\n")
+                    
+                    logger.info(f"✅ Đã thêm: @{user_info['username']} ({i}/{len(users_to_add)})")
                 
-                except (errors.UserPrivacyRestrictedError, errors.UserAlreadyParticipantError):
+                except (errors.UserPrivacyRestrictedError, errors.UserAlreadyParticipantError) as e:
                     failed += 1
-                except Exception:
+                    logger.debug(f"❌ Không thêm được: @{user_info['username']} - {type(e).__name__}")
+                except errors.FloodWaitError as e:
+                    logger.warning(f"⏳ Flood wait {e.seconds}s, dừng thêm")
+                    break
+                except Exception as e:
                     failed += 1
+                    logger.debug(f"⚠️ Lỗi với @{user_info['username']}: {type(e).__name__}")
                 
                 # Delay
-                await asyncio.sleep(random.uniform(MIN_DELAY * 2, MAX_DELAY * 2))
+                wait_time = random.uniform(MIN_DELAY * 2, MAX_DELAY * 2)
+                await asyncio.sleep(wait_time)
             
             self.is_running = False
             
@@ -295,7 +371,8 @@ class TelegramScanner:
             
         except Exception as e:
             self.is_running = False
-            return False, f"❌ Lỗi khi thêm: {str(e)}"
+            logger.error(f"Lỗi khi thêm: {e}")
+            return False, f"❌ Lỗi khi thêm: {str(e)[:200]}"
     
     def save_results(self, found_users):
         """Lưu kết quả"""
@@ -308,6 +385,7 @@ class TelegramScanner:
             
             with open(OUTPUT_JSON, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            logger.info(f"💾 Đã lưu {len(found_users)} user vào {OUTPUT_JSON}")
         except Exception as e:
             logger.error(f"❌ Lỗi lưu kết quả: {e}")
     
@@ -325,7 +403,17 @@ class TelegramScanner:
     async def stop(self):
         """Dừng tác vụ"""
         self.is_running = False
+        if self.client and self.client.is_connected():
+            await self.client.disconnect()
         return "⏹️ Đã dừng"
+    
+    async def cleanup(self):
+        """Dọn dẹp khi dừng"""
+        if self.client:
+            try:
+                await self.client.disconnect()
+            except:
+                pass
 
 # Khởi tạo scanner
 scanner = TelegramScanner()
@@ -339,7 +427,7 @@ dp = Dispatcher()
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     welcome_text = """
-🤖 <b>Telegram Scanner Bot - Web Service</b>
+🤖 <b>Telegram Scanner Bot</b>
 
 <b>⚙️ CẤU HÌNH:</b>
 /setapi <code>&lt;api_id&gt; &lt;api_hash&gt;</code>
@@ -365,6 +453,7 @@ async def cmd_start(message: Message):
 /stop
 /help
 /status - Trạng thái bot
+/reset - Reset session
 """
     await message.answer(welcome_text)
 
@@ -525,14 +614,30 @@ async def cmd_stop(message: Message):
     msg = await scanner.stop()
     await message.answer(msg)
 
+@dp.message(Command("reset"))
+async def cmd_reset(message: Message):
+    """Reset session file"""
+    try:
+        if os.path.exists(scanner.session_file):
+            os.remove(scanner.session_file)
+            await message.answer("✅ <b>Đã xóa session file!</b>\nDùng /connect để tạo session mới.")
+        else:
+            await message.answer("ℹ️ <b>Không có session file để xóa.</b>")
+    except Exception as e:
+        await message.answer(f"❌ <b>Lỗi khi reset:</b> {str(e)}")
+
 @dp.message(Command("status"))
 async def cmd_status(message: Message):
+    # Kiểm tra kết nối
+    is_connected = scanner.client and scanner.client.is_connected() if scanner.client else False
+    
     status_text = f"""
 📊 <b>TRẠNG THÁI BOT:</b>
 🏃 Đang chạy: <code>{'✅' if scanner.is_running else '❌'}</code>
-🔌 Đã kết nối: <code>{'✅' if scanner.client and scanner.client.is_connected() else '❌'}</code>
+🔌 Kết nối: <code>{'✅' if is_connected else '❌'}</code>
 ⚙️ Đã cấu hình: <code>{'✅' if scanner.config['is_configured'] else '❌'}</code>
-🌐 Webhook: <code>{'✅' if WEBHOOK_URL else '❌ Polling'}</code>
+📁 File username: <code>{len(scanner.load_usernames())} user</code>
+💾 User đã tìm: <code>{len(scanner.load_found_users())} user</code>
 """
     await message.answer(status_text)
 
@@ -560,6 +665,11 @@ async def cmd_help(message: Message):
 
 7. <b>Thêm user:</b>
    <code>/add [số_lượng]</code>
+
+<b>🛠️ Lệnh khác:</b>
+<code>/status</code> - Xem trạng thái
+<code>/reset</code> - Reset session (nếu bị lỗi)
+<code>/stop</code> - Dừng tác vụ
 """
     await message.answer(help_text)
 
@@ -567,56 +677,33 @@ async def cmd_help(message: Message):
 async def handle_unknown(message: Message):
     await message.answer("❌ <b>Lệnh không hợp lệ!</b>\nDùng <code>/help</code> để xem các lệnh.")
 
-async def setup_webhook():
-    """Cài đặt webhook cho bot"""
-    if WEBHOOK_URL:
-        webhook_url = f"{WEBHOOK_URL}/webhook"
-        webhook_info = await bot.get_webhook_info()
-        
-        if webhook_info.url != webhook_url:
-            await bot.set_webhook(
-                url=webhook_url,
-                drop_pending_updates=True
-            )
-            logger.info(f"✅ Đã cài đặt webhook: {webhook_url}")
-        else:
-            logger.info("✅ Webhook đã được cài đặt")
-    else:
-        logger.info("⚠️ Không có WEBHOOK_URL, sử dụng polling")
-
 async def create_app():
-    """Tạo ứng dụng web với webhook"""
+    """Tạo ứng dụng web"""
     app = web.Application()
     
     # Health check endpoint
     async def health_check(request):
         return web.json_response({
             'status': 'running',
-            'bot': 'Telegram Scanner Bot',
-            'webhook': bool(WEBHOOK_URL)
+            'service': 'Telegram Scanner Bot',
+            'timestamp': datetime.now().isoformat()
         })
     
-    # Webhook endpoint
-    async def webhook_handler(request):
+    # Lệnh reset qua web (cho admin)
+    async def reset_session(request):
         try:
-            # Lấy dữ liệu từ request
-            data = await request.json()
-            
-            # Tạo update object
-            update = types.Update(**data)
-            
-            # Xử lý update
-            await dp.feed_update(bot=bot, update=update)
-            
-            return web.Response(text='OK')
+            if os.path.exists(scanner.session_file):
+                os.remove(scanner.session_file)
+                return web.json_response({'status': 'success', 'message': 'Session reset'})
+            else:
+                return web.json_response({'status': 'no_session'})
         except Exception as e:
-            logger.error(f"Lỗi webhook: {e}")
-            return web.Response(status=500, text='Internal Server Error')
+            return web.json_response({'status': 'error', 'message': str(e)}, status=500)
     
     # Thêm routes
     app.router.add_get('/', health_check)
     app.router.add_get('/health', health_check)
-    app.router.add_post('/webhook', webhook_handler)
+    app.router.add_post('/reset', reset_session)
     
     return app
 
@@ -634,44 +721,40 @@ async def main():
     print("🤖 Bot đang khởi động...")
     print(f"📁 File username: {INPUT_TXT}")
     print(f"🌐 Port: {PORT}")
-    print(f"🔗 Webhook URL: {WEBHOOK_URL if WEBHOOK_URL else 'Không có (dùng polling)'}")
+    print(f"💾 Session file: {scanner.session_file}")
     print("=" * 80)
     
     # Tạo ứng dụng web
     app = await create_app()
     
-    # Cài đặt webhook nếu có URL
-    if WEBHOOK_URL:
-        await setup_webhook()
-    
     # Tạo web runner
     runner = web.AppRunner(app)
     await runner.setup()
     
-    # Bind vào port (Render dùng port 10000)
+    # Bind vào port
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
     
-    print(f"✅ Bot đã khởi động trên port {PORT}")
+    print(f"✅ Web server đang chạy trên port {PORT}")
     print("📲 Tìm bot trên Telegram và dùng /start để bắt đầu")
     
-    # Chạy polling nếu không có webhook
-    if not WEBHOOK_URL:
-        print("⚠️ Đang chạy polling mode (không có webhook)")
-        # Tạo task cho polling
-        polling_task = asyncio.create_task(dp.start_polling(bot))
+    # Chạy bot polling
+    print("🤖 Đang khởi động bot polling...")
     
     try:
-        # Giữ chương trình chạy
-        await asyncio.Event().wait()
+        # Chạy bot polling
+        await dp.start_polling(bot, handle_signals=False)
     except KeyboardInterrupt:
         print("\n\n👋 Bot đang dừng...")
+    except Exception as e:
+        print(f"\n❌ Lỗi khi chạy bot: {e}")
     finally:
         # Dọn dẹp
-        if not WEBHOOK_URL and 'polling_task' in locals():
-            polling_task.cancel()
+        print("🧹 Đang dọn dẹp...")
+        await scanner.cleanup()
         await runner.cleanup()
         await bot.session.close()
+        print("👋 Bot đã dừng hoàn toàn")
 
 if __name__ == "__main__":
     try:
