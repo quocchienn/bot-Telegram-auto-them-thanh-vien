@@ -1,5 +1,5 @@
 services:
-  - type: web
+  - type: web  # Web Service
     name: telegram-scanner-bot
     env: python
     buildCommand: pip install -r requirements.txt
@@ -7,5 +7,9 @@ services:
     envVars:
       - key: BOT_TOKEN
         sync: false
+      - key: PORT
+        value: 10000
+      - key: WEBHOOK_URL
+        sync: false  # Sẽ cấu hình sau
     plan: free
     autoDeploy: true
