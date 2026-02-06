@@ -9,9 +9,11 @@ from telethon import TelegramClient, errors
 from telethon.tl.functions.channels import InviteToChannelRequest
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, WebhookInfo
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
+from aiohttp import web
+import sys
 
 # Cấu hình logging
 logging.basicConfig(
@@ -21,12 +23,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 print("=" * 80)
-print("🤖 TELEGRAM USERNAME SCANNER BOT")
+print("🤖 TELEGRAM USERNAME SCANNER BOT - WEB SERVICE")
 print("=" * 80)
 
 # === CẤU HÌNH ===
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')  # URL của bạn trên Render
 SESSION_NAME = 'scanner_session'
+PORT = int(os.environ.get('PORT', 10000))  # Render dùng port 10000
 
 # === CẤU HÌNH SCANNER ===
 INPUT_TXT = "usernames.txt"
@@ -326,7 +330,7 @@ class TelegramScanner:
 # Khởi tạo scanner
 scanner = TelegramScanner()
 
-# Khởi tạo aiogram bot với cấu hình mới
+# Khởi tạo aiogram bot
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
@@ -335,7 +339,7 @@ dp = Dispatcher()
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     welcome_text = """
-🤖 <b>Telegram Scanner Bot</b>
+🤖 <b>Telegram Scanner Bot - Web Service</b>
 
 <b>⚙️ CẤU HÌNH:</b>
 /setapi <code>&lt;api_id&gt; &lt;api_hash&gt;</code>
@@ -360,6 +364,7 @@ async def cmd_start(message: Message):
 <b>🛠️ KHÁC:</b>
 /stop
 /help
+/status - Trạng thái bot
 """
     await message.answer(welcome_text)
 
@@ -520,6 +525,17 @@ async def cmd_stop(message: Message):
     msg = await scanner.stop()
     await message.answer(msg)
 
+@dp.message(Command("status"))
+async def cmd_status(message: Message):
+    status_text = f"""
+📊 <b>TRẠNG THÁI BOT:</b>
+🏃 Đang chạy: <code>{'✅' if scanner.is_running else '❌'}</code>
+🔌 Đã kết nối: <code>{'✅' if scanner.client and scanner.client.is_connected() else '❌'}</code>
+⚙️ Đã cấu hình: <code>{'✅' if scanner.config['is_configured'] else '❌'}</code>
+🌐 Webhook: <code>{'✅' if WEBHOOK_URL else '❌ Polling'}</code>
+"""
+    await message.answer(status_text)
+
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
     help_text = """
@@ -551,6 +567,59 @@ async def cmd_help(message: Message):
 async def handle_unknown(message: Message):
     await message.answer("❌ <b>Lệnh không hợp lệ!</b>\nDùng <code>/help</code> để xem các lệnh.")
 
+async def setup_webhook():
+    """Cài đặt webhook cho bot"""
+    if WEBHOOK_URL:
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        webhook_info = await bot.get_webhook_info()
+        
+        if webhook_info.url != webhook_url:
+            await bot.set_webhook(
+                url=webhook_url,
+                drop_pending_updates=True
+            )
+            logger.info(f"✅ Đã cài đặt webhook: {webhook_url}")
+        else:
+            logger.info("✅ Webhook đã được cài đặt")
+    else:
+        logger.info("⚠️ Không có WEBHOOK_URL, sử dụng polling")
+
+async def create_app():
+    """Tạo ứng dụng web với webhook"""
+    app = web.Application()
+    
+    # Health check endpoint
+    async def health_check(request):
+        return web.json_response({
+            'status': 'running',
+            'bot': 'Telegram Scanner Bot',
+            'webhook': bool(WEBHOOK_URL)
+        })
+    
+    # Webhook endpoint
+    async def webhook_handler(request):
+        try:
+            # Lấy dữ liệu từ request
+            data = await request.json()
+            
+            # Tạo update object
+            update = types.Update(**data)
+            
+            # Xử lý update
+            await dp.feed_update(bot=bot, update=update)
+            
+            return web.Response(text='OK')
+        except Exception as e:
+            logger.error(f"Lỗi webhook: {e}")
+            return web.Response(status=500, text='Internal Server Error')
+    
+    # Thêm routes
+    app.router.add_get('/', health_check)
+    app.router.add_get('/health', health_check)
+    app.router.add_post('/webhook', webhook_handler)
+    
+    return app
+
 async def main():
     """Hàm chính"""
     if not BOT_TOKEN:
@@ -564,13 +633,45 @@ async def main():
     
     print("🤖 Bot đang khởi động...")
     print(f"📁 File username: {INPUT_TXT}")
+    print(f"🌐 Port: {PORT}")
+    print(f"🔗 Webhook URL: {WEBHOOK_URL if WEBHOOK_URL else 'Không có (dùng polling)'}")
     print("=" * 80)
     
-    # Chạy bot
-    print("✅ Bot đã khởi động!")
+    # Tạo ứng dụng web
+    app = await create_app()
+    
+    # Cài đặt webhook nếu có URL
+    if WEBHOOK_URL:
+        await setup_webhook()
+    
+    # Tạo web runner
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # Bind vào port (Render dùng port 10000)
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    
+    print(f"✅ Bot đã khởi động trên port {PORT}")
     print("📲 Tìm bot trên Telegram và dùng /start để bắt đầu")
     
-    await dp.start_polling(bot)
+    # Chạy polling nếu không có webhook
+    if not WEBHOOK_URL:
+        print("⚠️ Đang chạy polling mode (không có webhook)")
+        # Tạo task cho polling
+        polling_task = asyncio.create_task(dp.start_polling(bot))
+    
+    try:
+        # Giữ chương trình chạy
+        await asyncio.Event().wait()
+    except KeyboardInterrupt:
+        print("\n\n👋 Bot đang dừng...")
+    finally:
+        # Dọn dẹp
+        if not WEBHOOK_URL and 'polling_task' in locals():
+            polling_task.cancel()
+        await runner.cleanup()
+        await bot.session.close()
 
 if __name__ == "__main__":
     try:
